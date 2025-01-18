@@ -1,4 +1,15 @@
+mod otel;
+mod routes;
+mod services;
+
+mod download;
+mod serve;
+
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::PermissionsExt;
+
 use clap::{Parser, Subcommand};
+use tabby_common::config::{Config, ModelConfig};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -6,27 +17,89 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Open Telemetry endpoint.
+    #[clap(hide = true, long)]
+    otlp_endpoint: Option<String>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Serve the model
+    /// Starts the api endpoint for IDE / Editor extensions.
     Serve(serve::ServeArgs),
+
+    /// Download the language model for serving.
+    Download(download::DownloadArgs),
 }
 
-mod serve;
+#[derive(clap::ValueEnum, strum::Display, PartialEq, Clone)]
+pub enum Device {
+    #[strum(serialize = "cpu")]
+    Cpu,
+
+    #[strum(serialize = "cuda")]
+    Cuda,
+
+    #[strum(serialize = "rocm")]
+    Rocm,
+
+    #[strum(serialize = "metal")]
+    Metal,
+
+    #[strum(serialize = "vulkan")]
+    Vulkan,
+}
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    color_eyre::install().expect("Must be able to install color_eyre");
 
-    // You can check for the existence of subcommands, and if found use their
-    // matches just as you would the top level cmd
-    match &cli.command {
-        Commands::Serve(args) => {
-            serve::main(args)
-                .await
-                .expect("Error happens during the serve");
-        }
+    let cli = Cli::parse();
+    let _guard = otel::init_tracing_subscriber(cli.otlp_endpoint);
+
+    let config = Config::load().expect("Must be able to load config");
+    let root = tabby_common::path::tabby_root();
+    std::fs::create_dir_all(&root).expect("Must be able to create tabby root");
+    #[cfg(target_family = "unix")]
+    {
+        let mut permissions = std::fs::metadata(&root).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&root, permissions).unwrap();
     }
+
+    match cli.command {
+        Commands::Serve(ref args) => serve::main(&config, args).await,
+        Commands::Download(ref args) => download::main(args).await,
+    }
+}
+
+#[macro_export]
+macro_rules! fatal {
+    ($msg:expr) => {
+        ({
+            tracing::error!($msg);
+            std::process::exit(1);
+        })
+    };
+
+    ($fmt:expr, $($arg:tt)*) => {
+        ({
+            tracing::error!($fmt, $($arg)*);
+            std::process::exit(1);
+        })
+    };
+}
+
+fn to_local_config(model: &str, parallelism: u8, device: &Device) -> ModelConfig {
+    let num_gpu_layers = if *device != Device::Cpu {
+        std::env::var("LLAMA_CPP_N_GPU_LAYERS")
+            .map(|s| s.parse::<u16>().ok())
+            .ok()
+            .flatten()
+            .unwrap_or(9999)
+    } else {
+        0
+    };
+
+    ModelConfig::new_local(model, parallelism, num_gpu_layers)
 }

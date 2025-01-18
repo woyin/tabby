@@ -1,15 +1,12 @@
-export { TabbyAgent } from "./TabbyAgent";
-export { Agent, AgentFunction, AgentEvent, StatusChangedEvent, agentEventNames } from "./types";
-export {
-  CancelablePromise,
-  CancelError,
-  ApiError,
-  HTTPValidationError,
-  ValidationError,
-  CompletionRequest,
-  CompletionResponse,
-  Choice,
-  ChoiceEvent,
-  CompletionEvent,
-  EventType,
-} from "./generated";
+#!/usr/bin/env node
+
+import * as dns from "node:dns";
+import { isBrowser } from "./env";
+import { Server } from "./server";
+
+if (!isBrowser) {
+  dns.setDefaultResultOrder("ipv4first");
+}
+
+const server = new Server();
+server.listen();
